@@ -1,0 +1,205 @@
+# Deploy trigr-web-application26 to staging.
+# Backend: SSH into EC2, pull umbrella + backend submodule, run migrations,
+#          reload PHP-FPM/nginx.
+# Frontend: build the frontend submodule and sync to S3 bucket
+#           limoverse-frontend-trigr, then invalidate CloudFront.
+#
+# Triggers:
+#   - push to develop (auto, after sync-submodules bumps pointers)
+#   - workflow_dispatch (manual)
+#
+# Required repo secrets:
+#   AWS_SSH_KEY_STAGING        — private key for ubuntu@3.7.166.16
+#   AWS_ACCESS_KEY_ID          — IAM creds for s3 sync + CF invalidation
+#   AWS_SECRET_ACCESS_KEY
+#   TRIGR_FRONTEND_REPO_TOKEN  — PAT with read on Vieroots-Wellness/limoverse_frontend
+#                                (used to fetch the frontend submodule, since GITHUB_TOKEN
+#                                cannot reach across orgs)
+#   TRIGR_S3_BUCKET            — limoverse-frontend-trigr
+#   TRIGR_CLOUDFRONT_DIST_ID   — populated after CloudFront distribution exists
+#   VITE_BINAH_MEASUREMENT_DURATION — same as staging (optional, has default)
+
+name: deploy
+
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/sync-submodules.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_HOST: 3.7.166.16
+  AWS_USER: ubuntu
+  AWS_REGION: ap-south-1
+  APP_PATH: /var/www/trigr-web-application26
+  NODE_VERSION: '20.x'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-backend:
+    name: Backend → EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging-trigr
+      url: https://trigr.limoverse.in
+    steps:
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.AWS_SSH_KEY_STAGING }}
+          AWS_HOST: ${{ env.AWS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/staging
+          chmod 600 ~/.ssh/staging
+          ssh-keyscan -H "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull umbrella + backend submodule on EC2
+        env:
+          AWS_USER: ${{ env.AWS_USER }}
+          AWS_HOST: ${{ env.AWS_HOST }}
+          APP_PATH: ${{ env.APP_PATH }}
+        run: |
+          ssh -i ~/.ssh/staging -o IdentitiesOnly=yes "$AWS_USER@$AWS_HOST" \
+              APP_PATH="$APP_PATH" bash -s <<'ENDSSH'
+            set -euo pipefail
+            cd "$APP_PATH"
+
+            sudo -u www-data php backend/artisan down || true
+
+            echo "==> pull umbrella develop"
+            sudo -u www-data git fetch --quiet origin develop
+            sudo -u www-data git reset --hard origin/develop
+
+            echo "==> update backend submodule to pinned SHA"
+            sudo -u www-data git submodule update --init --recursive backend
+
+            cd backend
+
+            echo "==> composer install"
+            sudo -u www-data composer install --no-dev --optimize-autoloader --no-interaction
+
+            echo "==> migrations"
+            sudo -u www-data php artisan migrate --force
+
+            echo "==> seeders (idempotent)"
+            for s in PermissionSeeder RoleSeeder AdminUserSeeder SubscriptionPlanSeeder; do
+              sudo -u www-data php artisan db:seed --class=$s --force || true
+            done
+
+            echo "==> caches"
+            sudo -u www-data php artisan config:cache
+            sudo -u www-data php artisan route:cache
+            sudo -u www-data php artisan view:cache
+
+            echo "==> back online"
+            sudo -u www-data php artisan up
+
+            sudo systemctl reload php8.3-fpm
+            curl -sS -o /dev/null -w "Backend health: HTTP %{http_code}\n" http://127.0.0.1:8080/up
+          ENDSSH
+
+  deploy-frontend:
+    name: Frontend → S3 + CloudFront
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging-trigr
+      url: https://trigr.limoverse.in
+    steps:
+      - name: Checkout umbrella (frontend submodule only)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TRIGR_FRONTEND_REPO_TOKEN }}
+
+      - name: Rewrite SSH submodule URLs to authenticated HTTPS
+        env:
+          PAT: ${{ secrets.TRIGR_FRONTEND_REPO_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${PAT}@github.com/".insteadOf \
+            "git@github.com:"
+
+      - name: Init frontend submodule
+        run: git submodule update --init frontend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: https://trigr.limoverse.in/api
+          VITE_ENVIRONMENT: staging-trigr
+          VITE_BINAH_MEASUREMENT_DURATION: ${{ vars.VITE_BINAH_MEASUREMENT_DURATION }}
+          NODE_ENV: production
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync to S3
+        env:
+          BUCKET: ${{ secrets.TRIGR_S3_BUCKET }}
+        run: |
+          aws s3 sync frontend/build/client/ "s3://$BUCKET/" \
+            --delete \
+            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
+
+      - name: Patch pre-compressed wasm (Binah SDK)
+        env:
+          BUCKET: ${{ secrets.TRIGR_S3_BUCKET }}
+        run: |
+          if aws s3 ls "s3://$BUCKET/a.wasm.gz" >/dev/null 2>&1; then
+            aws s3 cp "s3://$BUCKET/a.wasm.gz" "s3://$BUCKET/a.wasm" \
+              --content-encoding gzip \
+              --content-type "application/wasm" \
+              --metadata-directive REPLACE
+          fi
+
+      - name: Set immutable cache on hashed assets
+        env:
+          BUCKET: ${{ secrets.TRIGR_S3_BUCKET }}
+        run: |
+          for ext in js css webp png svg woff2; do
+            case $ext in
+              js)   ct="application/javascript" ;;
+              css)  ct="text/css" ;;
+              webp) ct="image/webp" ;;
+              png)  ct="image/png" ;;
+              svg)  ct="image/svg+xml" ;;
+              woff2) ct="font/woff2" ;;
+            esac
+            aws s3 cp "s3://$BUCKET/assets/" "s3://$BUCKET/assets/" \
+              --recursive \
+              --exclude "*" --include "*.$ext" \
+              --metadata-directive REPLACE \
+              --cache-control "public, max-age=31536000, immutable" \
+              --content-type "$ct" || true
+          done
+
+      - name: Invalidate CloudFront
+        if: env.CF_DIST != ''
+        env:
+          CF_DIST: ${{ secrets.TRIGR_CLOUDFRONT_DIST_ID }}
+        run: aws cloudfront create-invalidation --distribution-id "$CF_DIST" --paths "/*"
