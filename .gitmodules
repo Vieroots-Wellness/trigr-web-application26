@@ -1,0 +1,8 @@
+[submodule "backend"]
+	path = backend
+	url = git@github.com:Vieroots-Wellness/limoverse.git
+	branch = trigr
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:Vieroots-Wellness/limoverse_frontend.git
+	branch = trigr
