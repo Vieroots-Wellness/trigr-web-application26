@@ -50,7 +50,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: staging-trigr
-      url: https://trigr.vieroots.com
+      url: https://staging.vieroots.com
     steps:
       - name: Setup SSH
         env:
@@ -113,7 +113,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: staging-trigr
-      url: https://trigr.vieroots.com
+      url: https://staging.vieroots.com
     steps:
       - name: Checkout umbrella (frontend submodule only)
         uses: actions/checkout@v4
@@ -144,7 +144,7 @@ jobs:
       - name: Build
         working-directory: frontend
         env:
-          VITE_API_BASE_URL: https://trigr.vieroots.com/api
+          VITE_API_BASE_URL: https://staging.vieroots.com/api
           VITE_ENVIRONMENT: staging-trigr
           VITE_BINAH_MEASUREMENT_DURATION: ${{ vars.VITE_BINAH_MEASUREMENT_DURATION }}
           NODE_ENV: production
