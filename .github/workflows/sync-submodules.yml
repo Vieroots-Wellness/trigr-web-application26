@@ -78,3 +78,6 @@ frontend → ${FRONTEND_SHA}
 
 Trigger: ${EVENT_NAME}"
           git push origin "HEAD:${REF_NAME}"
+
+# Re-registered 2026-05-17 to refresh GitHub Actions trigger cache after a stale
+# workflow_dispatch dispatch returned 422 "Workflow does not have 'workflow_dispatch' trigger".
