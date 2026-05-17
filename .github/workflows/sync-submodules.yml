@@ -71,13 +71,6 @@ jobs:
           git config user.name  'trigr-bot'
           git config user.email 'trigr-bot@users.noreply.github.com'
           git add backend frontend
-          git commit -m "chore: bump submodule pointers (auto)
-
-backend  → ${BACKEND_SHA}
-frontend → ${FRONTEND_SHA}
-
-Trigger: ${EVENT_NAME}"
+          MSG="chore: bump submodule pointers (auto) — backend ${BACKEND_SHA} / frontend ${FRONTEND_SHA} via ${EVENT_NAME}"
+          git commit -m "$MSG"
           git push origin "HEAD:${REF_NAME}"
-
-# Re-registered 2026-05-17 to refresh GitHub Actions trigger cache after a stale
-# workflow_dispatch dispatch returned 422 "Workflow does not have 'workflow_dispatch' trigger".
