@@ -95,6 +95,19 @@ jobs:
               sudo -u www-data php artisan db:seed --class=$s --force || true
             done
 
+            echo "==> config:seed (Configuration + KinesteX + Binah + AffiliatePartner)"
+            sudo -u www-data php artisan config:seed || true
+
+            echo "==> onboarding seeders (categories + subcategories)"
+            for s in CategorySeeder SubcategorySeeder; do
+              sudo -u www-data php artisan db:seed --class=$s --force || true
+            done
+
+            echo "==> voucher / discount seeders"
+            for s in VoucherConfigSeeder DiscountOptionSeeder; do
+              sudo -u www-data php artisan db:seed --class=$s --force || true
+            done
+
             echo "==> caches"
             sudo -u www-data php artisan config:cache
             sudo -u www-data php artisan route:cache
