@@ -177,9 +177,13 @@ jobs:
         env:
           BUCKET: ${{ secrets.TRIGR_S3_BUCKET }}
         run: |
+          # NOTE: --delete would otherwise wipe the static landing page that lives
+          # under landing/ (served at app.vieroots.com/ via the spa-url-rewrite
+          # CloudFront function). Exclude it so deploys never remove it.
           aws s3 sync frontend/build/client/ "s3://$BUCKET/" \
             --delete \
-            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
+            --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*" \
+            --exclude "landing/*"
 
       - name: Patch pre-compressed wasm (Binah SDK)
         env:
